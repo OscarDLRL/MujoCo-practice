@@ -233,7 +233,6 @@ python examples/run_mujoco.py --controller lqg --robot-name go2 --teleop
 
 ## Command-Line Arguments
 
-```bash
 python examples/run_mujoco.py \
     --controller lqg \
     --robot-name mini_cheetah \

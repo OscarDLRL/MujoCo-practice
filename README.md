@@ -326,6 +326,3 @@ rather than as a full benchmark of autonomous quadruped locomotion.
 3. Di Carlo et al. *Dynamic Locomotion in the MIT Cheetah 3 through Convex Model-Predictive Control*. IROS 2018.
 
 ```
-
-I can also give you :contentReference[oaicite:0]{index=0}, :contentReference[oaicite:1]{index=1}, and :contentReference[oaicite:2]{index=2}.
-

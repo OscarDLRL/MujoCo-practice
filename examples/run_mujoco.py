@@ -33,6 +33,7 @@ from src.estimator_ekf import OrientationEKF
 from src.controller_pmp import PontryaginController
 from src.controller_lqg import LQGController
 from src.controller_mpc import MPCController
+from src.trajectory_generator import WaypointTrajectory
 
 
 # =====================================================================
@@ -75,6 +76,13 @@ class TeleopState:
         self.vy = 0.0
         self.wz = 0.0
 
+def build_reference_from_trajectory(ref: dict) -> np.ndarray:
+    x_ref = np.zeros(12)
+    x_ref[0:3] = ref["pos"]
+    x_ref[3:6] = ref["vel"]
+    x_ref[6:9] = np.array([0.0, 0.0, ref["yaw"]])
+    x_ref[9:12] = np.array([0.0, 0.0, ref["yaw_rate"]])
+    return x_ref
 
 def teleop_keyboard_loop(teleop: TeleopState):
     """
@@ -197,6 +205,7 @@ def get_feet_world(env) -> np.ndarray:
 # =====================================================================
 # Dynamics and references
 # =====================================================================
+
 def build_dynamics():
     dyn = QuadrupedDynamics(
         mass=ROBOT_MASS,
@@ -214,7 +223,7 @@ def build_cost_matrices():
         150, 150, 30,   # orientation
         1, 1, 4,        # angular velocity
     ])
-    R = np.eye(12) * 1e-4
+    R = np.eye(12) * 5e-2
     Q_f = Q * 5
     return Q, R, Q_f
 
@@ -294,7 +303,7 @@ def build_controller(name: str, dyn: QuadrupedDynamics, Q, R, Q_f, x_ref):
 # =====================================================================
 # Plotting
 # =====================================================================
-def save_single_run_plot(result, controller_name, robot_name, disturbance_type, x_ref_nominal):
+def save_single_run_plot(result, controller_name, robot_name, disturbance_type):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -305,6 +314,7 @@ def save_single_run_plot(result, controller_name, robot_name, disturbance_type, 
     log_x = result["state"]
     log_u = result["control"]
     log_dist = result["disturbance"]
+    log_x_ref = result["reference"]
 
     fig, axes = plt.subplots(4, 1, figsize=(14, 10), sharex=True)
     fig.suptitle(
@@ -316,7 +326,8 @@ def save_single_run_plot(result, controller_name, robot_name, disturbance_type, 
     labels_p = [r"$p_x$", r"$p_y$", r"$p_z$"]
     for i in range(3):
         axes[0].plot(log_t, log_x[:, i], label=labels_p[i])
-        axes[0].axhline(x_ref_nominal[i], ls="--", color="gray", lw=0.6)
+        axes[0].plot(log_t, log_x_ref[:, i], "--", lw=1.0, label=f"{labels_p[i]} ref")
+
     axes[0].set_ylabel("Position [m]")
     axes[0].legend(ncol=3, fontsize=8)
     axes[0].grid(True, alpha=0.3)
@@ -324,6 +335,8 @@ def save_single_run_plot(result, controller_name, robot_name, disturbance_type, 
     labels_v = [r"$v_x$", r"$v_y$", r"$v_z$"]
     for i in range(3):
         axes[1].plot(log_t, log_x[:, 3 + i], label=labels_v[i])
+        axes[1].plot(log_t, log_x_ref[:, 3 + i], "--", lw=1.0, label=f"{labels_v[i]} ref")
+
     axes[1].set_ylabel("Velocity [m/s]")
     axes[1].legend(ncol=3, fontsize=8)
     axes[1].grid(True, alpha=0.3)
@@ -353,6 +366,20 @@ def save_single_run_plot(result, controller_name, robot_name, disturbance_type, 
     plt.savefig(path, dpi=150)
     plt.close()
     print(f"\n  Plot saved: {path}")
+    fig2, ax = plt.subplots(figsize=(6,6))
+
+    ax.plot(log_x[:,0], log_x[:,1], label="real")
+    ax.plot(log_x_ref[:,0], log_x_ref[:,1], "--", label="reference")
+
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.set_title("Trajectory Tracking")
+    ax.legend()
+    ax.grid(True)
+
+    plt.tight_layout()
+    plt.savefig(f"results/trajectory_{controller_name}_{robot_name}_{disturbance_type}.png")
+    plt.close()
 
 
 def save_comparison_plot(results, robot_name, disturbance_type):
@@ -375,9 +402,10 @@ def save_comparison_plot(results, robot_name, disturbance_type):
         t = data["time"]
         x = data["state"]
         u = data["control"]
+        x_ref_hist = data["reference"]
 
-        pos_err = np.linalg.norm(x[:, :3] - np.array([0.0, 0.0, ROBOT_HIP_HEIGHT]), axis=1)
-        vel_err = np.linalg.norm(x[:, 3:6], axis=1)
+        pos_err = np.linalg.norm(x[:, :3] - x_ref_hist[:, :3], axis=1)
+        vel_err = np.linalg.norm(x[:, 3:6] - x_ref_hist[:, 3:6], axis=1)
         u_norm = np.linalg.norm(u, axis=1)
 
         axes[0].plot(t, pos_err, color=colors[name], label=name.upper(), lw=1.5)
@@ -415,6 +443,8 @@ def run(
     duration: float = 10.0,
     disturbance_type: str = "impulse",
     save_log: bool = True,
+    path: str = "square",
+    speed: float = 0.25,
 ):
     print(f"\n{'=' * 60}")
     print(f"  Controller:   {controller_name.upper()}")
@@ -462,12 +492,39 @@ def run(
     ctrl_steps = max(1, int(ctrl_dt / sim_dt))
     n_steps = int(duration / sim_dt)
 
-    log_t, log_x, log_u, log_err, log_dist = [], [], [], [], []
+    log_t, log_x, log_u, log_err, log_dist, log_x_ref = [], [], [], [], [], []
     current_grfs = u_ref.copy()
 
     print(f"  Sim dt: {sim_dt}s, Ctrl rate: {1 / ctrl_dt:.0f} Hz, Total steps: {n_steps}")
     print("  Starting simulation...\n")
 
+    if path == "line":
+        waypoints = [
+            [0.0, 0.0, ROBOT_HIP_HEIGHT],
+            [1.5, 0.0, ROBOT_HIP_HEIGHT],
+        ]
+    elif path == "zigzag":
+        waypoints = [
+            [0.0, 0.0, ROBOT_HIP_HEIGHT],
+            [0.5, 0.5, ROBOT_HIP_HEIGHT],
+            [1.0, -0.5, ROBOT_HIP_HEIGHT],
+            [1.5, 0.5, ROBOT_HIP_HEIGHT],
+            [2.0, 0.0, ROBOT_HIP_HEIGHT],
+        ]
+    else:
+        waypoints = [
+            [0.0, 0.0, ROBOT_HIP_HEIGHT],
+            [1.0, 0.0, ROBOT_HIP_HEIGHT],
+            [1.0, 1.0, ROBOT_HIP_HEIGHT],
+            [0.0, 1.0, ROBOT_HIP_HEIGHT],
+            [0.0, 0.0, ROBOT_HIP_HEIGHT],
+        ]
+
+    trajectory = WaypointTrajectory(
+        waypoints=waypoints,
+        speed=speed,
+        dt=ctrl_dt,
+    )
     try:
         for step in range(n_steps):
             t = step * sim_dt
@@ -480,13 +537,13 @@ def run(
             cmd_vy = teleop.vy if teleop_enabled else 0.0
             cmd_wz = teleop.wz if teleop_enabled else 0.0
 
-            x_ref = build_reference_state(
-                dyn,
-                height=ROBOT_HIP_HEIGHT,
-                vx=cmd_vx,
-                vy=cmd_vy,
-                wz=cmd_wz,
-            )
+            traj_idx = min(step // ctrl_steps, trajectory.length() - 1)
+            ref = trajectory.get_reference(traj_idx)
+            x_ref = build_reference_from_trajectory(ref)
+
+            cmd_vx = ref["vel"][0]
+            cmd_vy = ref["vel"][1]
+            cmd_wz = ref["yaw_rate"]
 
             try:
                 if hasattr(env, "target_base_vel"):
@@ -555,8 +612,10 @@ def run(
             log_t.append(t)
             log_x.append(x.copy())
             log_u.append(current_grfs.copy())
-            log_err.append(np.linalg.norm(x[:6] - x_ref[:6]))
+            pos_err = np.linalg.norm(x[:3] - x_ref[:3])
+            log_err.append(pos_err)
             log_dist.append(np.linalg.norm(dist))
+            log_x_ref.append(x_ref.copy())
 
             if step % int(1.0 / sim_dt) == 0:
                 pos_err = np.linalg.norm(x[:3] - x_ref[:3])
@@ -594,14 +653,14 @@ def run(
         "control": log_u,
         "error": log_err,
         "disturbance": log_dist,
+        "reference": np.array(log_x_ref),
     }
 
     if save_log and len(log_t) > 1:
-        x_ref_nominal = build_reference_state(dyn, height=ROBOT_HIP_HEIGHT, vx=0.0, vy=0.0, wz=0.0)
-        save_single_run_plot(result, controller_name, robot_name, disturbance_type, x_ref_nominal)
+        save_single_run_plot(result, controller_name, robot_name, disturbance_type)
 
     print(f"\n  --- {controller_name.upper()} Summary ---")
-    print(f"  Position/velocity RMSE: {np.sqrt(np.mean(log_err**2)):.4f}")
+    print(f"  Position RMSE: {np.sqrt(np.mean(log_err**2)):.4f}")
     print(f"  Max error: {np.max(log_err):.4f}")
     print(f"  Mean GRF norm: {np.mean(np.linalg.norm(log_u, axis=1)):.1f} N")
 
@@ -616,6 +675,8 @@ def run_comparison(
     duration: float,
     disturbance_type: str,
     robot_name: str,
+    path: str,
+    speed: float,
 ):
     results = {}
     for name in ["pmp", "lqg", "mpc"]:
@@ -627,6 +688,8 @@ def run_comparison(
             duration=duration,
             disturbance_type=disturbance_type,
             save_log=False,
+            path=path,
+            speed=speed,
         )
 
     save_comparison_plot(results, robot_name, disturbance_type)
@@ -673,6 +736,8 @@ if __name__ == "__main__":
         action="store_true",
         help="Run headless without viewer",
     )
+    parser.add_argument("--path", choices=["line", "square", "zigzag"], default="square")
+    parser.add_argument("--speed", type=float, default=0.25)
     args = parser.parse_args()
 
     do_render = not args.no_render
@@ -685,6 +750,8 @@ if __name__ == "__main__":
             duration=args.duration,
             disturbance_type=args.disturbance,
             robot_name=args.robot_name,
+            path=args.path,
+            speed=args.speed,
         )
     else:
         run(
@@ -695,4 +762,6 @@ if __name__ == "__main__":
             duration=args.duration,
             disturbance_type=args.disturbance,
             save_log=True,
+            path=args.path,
+            speed=args.speed,
         )

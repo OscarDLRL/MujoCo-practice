@@ -20,7 +20,6 @@ import select
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
-
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -35,9 +34,7 @@ from src.estimator_ekf import OrientationEKF
 from src.controller_pmp import PontryaginController
 from src.controller_lqg import LQGController
 from src.controller_mpc import MPCController
-from src.trajectory_generator import WaypointTrajectory
-from src.gait_planner import TrotGaitPlanner
-from src.foot_trajectory import FootTrajectoryGenerator
+
 
 # =====================================================================
 # Nominal physical parameters
@@ -207,6 +204,68 @@ def build_waypoints(path_name: str, size: float, start_xy: np.ndarray) -> Option
     raise ValueError(f"Unknown path: {path_name}")
 
 
+@dataclass
+class WaypointFollower:
+    waypoints: np.ndarray
+    loop: bool = True
+    waypoint_tol: float = 0.03
+    kp_xy: float = 0.5
+    max_speed: float = 0.10
+    yaw_mode: str = "none"     # "none" or "path"
+    kp_yaw: float = 1.5
+    max_wz: float = 0.5
+    current_idx: int = 0
+
+    def __post_init__(self):
+        self.waypoints = np.asarray(self.waypoints, dtype=float)
+        if self.waypoints.ndim != 2 or self.waypoints.shape[1] != 2 or self.waypoints.shape[0] < 2:
+            raise ValueError("waypoints must have shape (N,2), N>=2")
+        # If starting exactly at waypoint 0, begin by chasing waypoint 1
+        self.current_idx = 1 if self.waypoints.shape[0] > 1 else 0
+
+    def _segment_direction(self) -> np.ndarray:
+        prev_idx = max(self.current_idx - 1, 0)
+        seg = self.waypoints[self.current_idx] - self.waypoints[prev_idx]
+        n = np.linalg.norm(seg)
+        if n < 1e-9:
+            return np.array([1.0, 0.0], dtype=float)
+        return seg / n
+
+    def update(self, pos_xy: np.ndarray, yaw: float):
+        while True:
+            target = self.waypoints[self.current_idx]
+            err = target - pos_xy
+            dist = float(np.linalg.norm(err))
+            is_last = self.current_idx >= len(self.waypoints) - 1
+
+            if dist <= self.waypoint_tol and (not is_last or self.loop):
+                if is_last and self.loop:
+                    self.current_idx = 1 if len(self.waypoints) > 1 else 0
+                elif not is_last:
+                    self.current_idx += 1
+                else:
+                    break
+            else:
+                break
+
+        target = self.waypoints[self.current_idx]
+        err = target - pos_xy
+
+        v_des = self.kp_xy * err
+        speed = float(np.linalg.norm(v_des))
+        if speed > self.max_speed and speed > 1e-9:
+            v_des *= self.max_speed / speed
+
+        if self.yaw_mode == "path":
+            tangent = self._segment_direction()
+            yaw_des = np.arctan2(tangent[1], tangent[0])
+            wz = self.kp_yaw * wrap_to_pi(yaw_des - yaw)
+            wz = float(np.clip(wz, -self.max_wz, self.max_wz))
+        else:
+            wz = 0.0
+
+        return float(v_des[0]), float(v_des[1]), float(wz), target.copy()
+
 
 # =====================================================================
 # State extraction and helpers
@@ -220,7 +279,15 @@ def get_state(env) -> np.ndarray:
     rpy = env.base_ori_euler_xyz
     omega = env.base_ang_vel(frame="world")
     return np.concatenate([p, v, rpy, omega])
+
+
 def grf_to_torques(env, foot_forces_world: np.ndarray, contact_mask: np.ndarray) -> np.ndarray:
+    """
+    Map 12D ground reaction forces [f_FL, f_FR, f_RL, f_RR] in world frame
+    to joint torques via τ = Σ J_i(q)^T f_i.
+
+    The env exposes per-leg Jacobians and actuator indices.
+    """
     tau = np.zeros(env.mjModel.nu)
 
     try:
@@ -231,72 +298,14 @@ def grf_to_torques(env, foot_forces_world: np.ndarray, contact_mask: np.ndarray)
     leg_names = ["FL", "FR", "RL", "RR"]
 
     for i, leg in enumerate(leg_names):
-        f_leg = foot_forces_world[3 * i:3 * i + 3]
-
-        # Si está en swing, permite solo apoyo vertical/lateral pequeño
         if not contact_mask[i]:
-            f_leg = f_leg.copy()
-            f_leg[0] *= 0.05
-            f_leg[1] *= 0.05
-            f_leg[2] = min(f_leg[2], 5.0)
+            continue
 
+        f_leg = foot_forces_world[3 * i:3 * i + 3]
         J_full = jacobians[leg]
         leg_idx = env.legs_qvel_idx[leg]
         J_leg = J_full[:, leg_idx]
-
         tau_leg = -J_leg.T @ f_leg
-        tau_idx = env.legs_tau_idx[leg]
-        tau[tau_idx] = tau_leg
-
-    if hasattr(env, "action_space"):
-        tau = np.clip(tau, env.action_space.low, env.action_space.high)
-
-    return tau
-
-def swing_feet_to_torques(
-    env,
-    desired_feet_world: np.ndarray,
-    contact_mask: np.ndarray,
-    kp: float = 25.0,
-    kd: float = 1.5,
-) -> np.ndarray:
-    """
-    Control PD cartesiano para patas en swing.
-    Solo aplica torque a patas que NO están en contacto.
-    """
-    tau = np.zeros(env.mjModel.nu)
-
-    try:
-        feet_pos = get_feet_world(env)
-        jacobians = env.feet_jacobians(frame="world")
-        qvel = env.mjData.qvel
-    except Exception:
-        return tau
-
-    if feet_pos is None or desired_feet_world is None:
-        return tau
-
-    leg_names = ["FL", "FR", "RL", "RR"]
-
-    for i, leg in enumerate(leg_names):
-        if contact_mask[i]:
-            continue  # patas en apoyo las controla LQG/MPC
-
-        pos_err = desired_feet_world[i] - feet_pos[i]
-
-        J_full = jacobians[leg]
-        leg_idx = env.legs_qvel_idx[leg]
-        J_leg = J_full[:, leg_idx]
-
-        # Cartesian foot velocity via Jacobian
-        foot_vel = J_leg @ qvel[leg_idx]
-
-        # PD virtual force
-        f_virtual = kp * pos_err - kd * foot_vel
-        f_virtual = np.clip(f_virtual, -15.0, 15.0)
-
-        tau_leg = -J_leg.T @ f_virtual
-
         tau_idx = env.legs_tau_idx[leg]
         tau[tau_idx] = tau_leg
 
@@ -336,12 +345,13 @@ def build_dynamics():
     dyn.r_feet_body = ROBOT_FOOT_OFFSET.copy()
     return dyn
 
+
 def build_cost_matrices():
     Q = np.diag([
-        1,  1,  20,
-        5,  5,  5,
-        25, 25, 15,
-        2,  2,  2,
+        80, 80, 400,    # position
+        8, 8, 400,       # velocity
+        150, 150, 30,   # orientation
+        1, 1, 4,        # angular velocity
     ])
     R = np.eye(12) * 1e-4
     Q_f = Q * 5
@@ -354,19 +364,18 @@ def build_reference_state(
     vx: float = 0.0,
     vy: float = 0.0,
     wz: float = 0.0,
-    current_xy=None,
 ) -> np.ndarray:
-
+    """
+    x = [p(3), v(3), rpy(3), omega(3)]
+    Track commanded planar velocity and yaw rate while keeping upright.
+    This is the ORIGINAL stable inner-loop reference.
+    """
     x_ref = dyn.standing_state(height=height)
-
-    if current_xy is not None:
-        x_ref[0:2] = current_xy
-
     x_ref[3:6] = np.array([vx, vy, 0.0])
     x_ref[6:9] = np.array([0.0, 0.0, 0.0])
     x_ref[9:12] = np.array([0.0, 0.0, wz])
-
     return x_ref
+
 
 def build_logging_reference(
     target_xy: np.ndarray,
@@ -599,12 +608,14 @@ def run(
     print(f"  Path:         {path_name}")
     print(f"{'=' * 60}\n")
 
+    state_obs_names = tuple(QuadrupedEnv.ALL_OBS)
+
     env = QuadrupedEnv(
         robot=robot_name,
         scene="flat",
         sim_dt=0.002,
         base_vel_command_type="human",
-        state_obs_names=tuple(QuadrupedEnv.ALL_OBS),
+        state_obs_names=state_obs_names,
     )
 
     _ = env.reset(random=False)
@@ -612,6 +623,7 @@ def run(
         env.render()
 
     teleop = TeleopState()
+    teleop_thread = None
     if teleop_enabled:
         teleop_thread = threading.Thread(
             target=teleop_keyboard_loop,
@@ -622,19 +634,9 @@ def run(
 
     dyn = build_dynamics()
     Q, R, Q_f = build_cost_matrices()
-    desired_vx = 0.0
-    desired_vy = 0.0
-    desired_wz = 0.0
 
-    x_ref_inner = build_reference_state(
-        dyn,
-        height=ROBOT_HIP_HEIGHT,
-        vx=0.0,
-        vy=0.0,
-        wz=0.0,
-        current_xy=np.zeros(2),
-    )
-
+    # Original stable inner-loop reference / controller init
+    x_ref_inner = build_reference_state(dyn, height=ROBOT_HIP_HEIGHT, vx=0.0, vy=0.0, wz=0.0)
     u_ref = dyn.standing_control()
     controller = build_controller(controller_name, dyn, Q, R, Q_f, x_ref_inner)
 
@@ -646,53 +648,36 @@ def run(
     n_steps = int(duration / sim_dt)
 
     start_xy = get_state(env)[0:2].copy()
-
-    trajectory = None
-    gait = TrotGaitPlanner(
-        step_period= 1.6,
-    )
-    gait_start_time = settle_time + 5.0
-
-    foot_traj = FootTrajectoryGenerator(swing_height=0.2)
-    last_contact = np.ones(4, dtype=bool)
-    swing_start_feet = None
-    swing_target_feet = None
-    desired_feet = None
-
+    follower = None
     if (not teleop_enabled) and path_name != "none":
-        waypoints_2d = build_waypoints(path_name, path_size, start_xy)
-
-        waypoints_3d = []
-        for p in waypoints_2d:
-            waypoints_3d.append([p[0], p[1], ROBOT_HIP_HEIGHT])
-
-        trajectory = WaypointTrajectory(
-            waypoints=waypoints_3d,
-            speed=path_speed,
-            dt=ctrl_dt,
+        wps = build_waypoints(path_name, path_size, start_xy)
+        follower = WaypointFollower(
+            waypoints=wps,
+            loop=True,
+            waypoint_tol=waypoint_tol,
+            kp_xy=waypoint_kp,
+            max_speed=path_speed,
+            yaw_mode=yaw_mode,
+            kp_yaw=1.5,
+            max_wz=follower_max_wz,
         )
 
-        print(f"  Trajectory samples: {trajectory.length()}")
-
     log_t, log_x, log_ref, log_u, log_err, log_dist = [], [], [], [], [], []
-
     current_grfs = u_ref.copy()
+    desired_vx = desired_vy = desired_wz = 0.0
     target_xy = start_xy.copy()
 
-    print(f"  Sim dt: {sim_dt}s")
-    print(f"  Ctrl rate: {1 / ctrl_dt:.0f} Hz")
-    print(f"  Total steps: {n_steps}")
+    print(f"  Sim dt: {sim_dt}s, Ctrl rate: {1 / ctrl_dt:.0f} Hz, Total steps: {n_steps}")
     print("  Starting simulation...\n")
 
     try:
         for step in range(n_steps):
             t = step * sim_dt
-            traj_k = int(max(0.0, t - settle_time) / ctrl_dt)
 
             x = get_state(env)
             pos_xy = x[0:2].copy()
-
-            real_contact = get_contacts(env)
+            yaw = float(x[8])
+            contact = get_contacts(env)
             r_feet = get_feet_world(env)
 
             if teleop_enabled:
@@ -700,89 +685,19 @@ def run(
                 desired_vy = teleop.vy
                 desired_wz = teleop.wz
                 target_xy = pos_xy.copy()
-                contact = real_contact
-
-            elif trajectory is not None:
+            elif follower is not None:
                 if t < settle_time:
-                    desired_vx = 0.0
-                    desired_vy = 0.0
-                    desired_wz = 0.0
+                    desired_vx = desired_vy = desired_wz = 0.0
                     target_xy = pos_xy.copy()
-                    contact = np.ones(4, dtype=bool)
                 else:
-                    ref = trajectory.get_reference(traj_k)
-
+                    vx_cmd, vy_cmd, wz_cmd, target_xy = follower.update(pos_xy, yaw)
                     alpha = min((t - settle_time) / max(ramp_time, 1e-6), 1.0)
-                    pos_error = ref["pos"][0:2] - pos_xy          # world-frame error vector
-                    ff_vx = ref["vel"][0]                          # feedforward from trajectory
-                    ff_vy = ref["vel"][1]
-
-                    # P correction: pull toward the reference position
-                    fb_vx = waypoint_kp * pos_error[0]
-                    fb_vy = waypoint_kp * pos_error[1]
-
-                    # Clamp correction so it doesn't overwhelm the feedforward
-                    max_correction = 0.03  # m/s, tune this
-                    fb_vx = float(np.clip(fb_vx, -max_correction, max_correction))
-                    fb_vy = float(np.clip(fb_vy, -max_correction, max_correction))
-
-                    desired_vx = alpha * (ff_vx + fb_vx)
-                    desired_vy = alpha * (ff_vy + fb_vy)
-                    desired_wz = alpha * ref["yaw_rate"]
-
-                    target_xy = ref["pos"][0:2].copy()
-
-                    if t < gait_start_time:
-                        contact = np.ones(4, dtype=bool)
-                    else:
-                        gait_t = t - gait_start_time
-                        contact = gait.get_contact_pattern(gait_t)
-
-
-
+                    desired_vx = alpha * vx_cmd
+                    desired_vy = alpha * vy_cmd
+                    desired_wz = alpha * wz_cmd
             else:
-                desired_vx = 0.0
-                desired_vy = 0.0
-                desired_wz = 0.0
+                desired_vx = desired_vy = desired_wz = 0.0
                 target_xy = pos_xy.copy()
-                contact = np.ones(4, dtype=bool)
-
-            desired_feet = None
-
-            if r_feet is not None:
-                if swing_start_feet is None:
-                    swing_start_feet = r_feet.copy()
-                    swing_target_feet = r_feet.copy()
-
-                desired_feet = r_feet.copy()
-
-                for leg_id in range(4):
-                    # Detecta transición: apoyo -> swing
-                    if last_contact[leg_id] and not contact[leg_id]:
-                        swing_start_feet[leg_id] = r_feet[leg_id].copy()
-                        body_pos = x[0:3].copy()
-
-                        nominal_foot_world = body_pos + ROBOT_FOOT_OFFSET[leg_id]
-
-                        step_x = np.clip(desired_vx * gait.step_period * 0.25, -0.02, 0.02)
-                        step_y = np.clip(desired_vy * gait.step_period * 0.25, -0.01, 0.01)
-
-                        swing_target_feet[leg_id] = nominal_foot_world.copy()
-                        swing_target_feet[leg_id, 0] += step_x
-                        swing_target_feet[leg_id, 1] += step_y
-                        swing_target_feet[leg_id, 2] = swing_start_feet[leg_id, 2]
-
-                    # Si la pata está en swing, usa trayectoria suave
-                    if not contact[leg_id]:
-                        swing_phase = gait.get_swing_phase(t - gait_start_time, leg_id)
-
-                        desired_feet[leg_id] = foot_traj.swing(
-                            p0=swing_start_feet[leg_id],
-                            pf=swing_target_feet[leg_id],
-                            phase=swing_phase,
-                        )
-
-                last_contact = contact.copy()
 
             x_ref_inner = build_reference_state(
                 dyn,
@@ -790,9 +705,7 @@ def run(
                 vx=desired_vx,
                 vy=desired_vy,
                 wz=desired_wz,
-                current_xy=x[0:2],   
             )
-
             x_ref_log = build_logging_reference(
                 target_xy=target_xy,
                 height=ROBOT_HIP_HEIGHT,
@@ -812,11 +725,9 @@ def run(
                 pass
 
             dist = np.zeros(6)
-
             if disturbance_type == "impulse":
                 if 2.0 <= t < 2.15:
                     dist = np.array([50.0, 25.0, 0.0, 0.0, 0.0, 5.0])
-
             elif disturbance_type == "persistent":
                 if t >= 2.0:
                     dist = np.array([15.0, 8.0, 0.0, 0.0, 0.0, 2.0])
@@ -827,18 +738,21 @@ def run(
             accel_world = env.base_lin_acc(frame="world")
             R_WB = env.base_configuration[0:3, 0:3]
             accel_body = R_WB.T @ (accel_world - np.array([0.0, 0.0, -9.81]))
-
             ori_ekf.predict(gyro)
             ori_ekf.update_accel(accel_body)
 
             if step % ctrl_steps == 0:
                 try:
+                    _A_c_new, _B_c_new = dyn.continuous_AB(x, contact, r_feet)
+                    _A_d_new, _B_d_new = dyn.discretize(_A_c_new, _B_c_new)
+                    _g_d = dyn.gravity_vector()
+                except Exception:
+                    pass
+
+                try:
                     if controller_name == "lqg":
                         y = x + np.random.randn(12) * np.array(
-                            [5e-3] * 3 +
-                            [2e-2] * 3 +
-                            [1e-2] * 3 +
-                            [5e-2] * 3
+                            [5e-3] * 3 + [2e-2] * 3 + [1e-2] * 3 + [5e-2] * 3
                         )
                         current_grfs = controller.step(y, x_ref_inner, u_ref)
                     else:
@@ -847,59 +761,18 @@ def run(
                             x_ref=x_ref_inner,
                             u_ref=u_ref,
                         )
-
                 except Exception as e:
                     if step < 5:
                         print(f"  Controller error at t={t:.3f}: {e}")
                     current_grfs = u_ref.copy()
 
                 current_grfs = np.clip(current_grfs, -150.0, 150.0)
+
                 for i in range(4):
-                    fx = current_grfs[3*i + 0]
-                    fy = current_grfs[3*i + 1]
-                    fz = current_grfs[3*i + 2]
+                    if not contact[i]:
+                        current_grfs[3 * i:3 * i + 3] = 0.0
 
-                    # El suelo no puede jalar al robot hacia abajo
-                    fz = np.clip(fz, 0.0, 120.0)
-
-                    # Limitar fuerzas laterales
-                    mu = 0.6
-                    fx = np.clip(fx, -mu * fz, mu * fz)
-                    fy = np.clip(fy, -mu * fz, mu * fz)
-
-                    current_grfs[3*i + 0] = fx
-                    current_grfs[3*i + 1] = fy
-                    current_grfs[3*i + 2] = fz
-               
-                swing_ids = [i for i in range(4) if not contact[i]]
-                stance_ids = [i for i in range(4) if contact[i]]
-
-                if len(swing_ids) == 1 and len(stance_ids) == 3:
-                    # Apoyo ligero en la pata que se mueve
-                    sw = swing_ids[0]
-                    current_grfs[3*sw + 0] *= 0.05
-                    current_grfs[3*sw + 1] *= 0.05
-                    current_grfs[3*sw + 2] = 3.0
-
-                    # Redistribuir peso extra a las 3 patas firmes
-                    extra_fz = 20.0 / 3.0
-                    for st in stance_ids:
-                        current_grfs[3*st + 2] = min(current_grfs[3*st + 2] + extra_fz, 120.0)
-
-                    rear_legs = [2, 3]
-
-                    if len(swing_ids) == 1 and swing_ids[0] in rear_legs:
-                        for st in stance_ids:
-                            current_grfs[3*st + 2] = min(current_grfs[3*st + 2] + 10.0, 120.0)
-
-            tau_stance = grf_to_torques(env, current_grfs, contact)
-            tau_swing = swing_feet_to_torques(env, desired_feet, contact)
-
-            tau = tau_stance + tau_swing
-
-            if hasattr(env, "action_space"):
-                tau = np.clip(tau, env.action_space.low, env.action_space.high)
-
+            tau = grf_to_torques(env, current_grfs, contact)
             _, _, terminated, _, _ = env.step(action=tau)
 
             if render:
@@ -915,33 +788,18 @@ def run(
             if step % int(1.0 / sim_dt) == 0:
                 pos_err = np.linalg.norm(x[0:2] - target_xy)
                 vel_err = np.linalg.norm(x[3:5] - np.array([desired_vx, desired_vy]))
-
                 print(
-                    f"  t={t:5.1f}s | "
-                    f"pos_err={pos_err:.4f}m | "
+                    f"  t={t:5.1f}s | pos_err={pos_err:.4f}m | "
                     f"vel_err={vel_err:.4f}m/s | "
                     f"height={x[2]:.3f}m | "
-                    f"vx={x[3]:+.3f} | "
-                    f"vy={x[4]:+.3f} | "
-                    f"wz={x[11]:+.3f} | "
+                    f"vx={x[3]:+.3f} | vy={x[4]:+.3f} | wz={x[11]:+.3f} | "
                     f"cmd=({desired_vx:+.2f},{desired_vy:+.2f},{desired_wz:+.2f}) | "
-                    f"contact={contact.astype(int).tolist()}"
+                    f"wp={(follower.current_idx if follower is not None else -1)}"
                 )
-
-            if step % int(0.25 / sim_dt) == 0:
-                leg_names = ["FL", "FR", "RL", "RR"]
-                swing_legs = [leg_names[i] for i in range(4) if not contact[i]]
-                print(f"t={t:.2f} swing_legs={swing_legs} contact={contact.astype(int).tolist()}")
 
             if terminated:
                 print(f"\n  Environment terminated early at t={t:.3f}s.")
-                print(
-                    f"  Final state: "
-                    f"z={x[2]:.3f}, "
-                    f"roll={x[6]:+.3f}, "
-                    f"pitch={x[7]:+.3f}, "
-                    f"yaw={x[8]:+.3f}"
-                )
+                print(f"  Final state snapshot: z={x[2]:.3f}, roll={x[6]:+.3f}, pitch={x[7]:+.3f}, yaw={x[8]:+.3f}")
                 break
 
     except KeyboardInterrupt:
@@ -988,6 +846,50 @@ def run(
 
     result["metrics"] = metrics
     return result
+
+
+# =====================================================================
+# Comparison mode
+# =====================================================================
+def run_comparison(
+    render: bool,
+    duration: float,
+    disturbance_type: str,
+    robot_name: str,
+    path_name: str,
+    path_size: float,
+    path_speed: float,
+    settle_time: float,
+    ramp_time: float,
+    waypoint_tol: float,
+    waypoint_kp: float,
+    yaw_mode: str,
+    follower_max_wz: float,
+):
+    results = {}
+    for name in ["pmp", "lqg", "mpc"]:
+        results[name] = run(
+            controller_name=name,
+            robot_name=robot_name,
+            teleop_enabled=False,
+            render=render,
+            duration=duration,
+            disturbance_type=disturbance_type,
+            save_log=False,
+            path_name=path_name,
+            path_size=path_size,
+            path_speed=path_speed,
+            settle_time=settle_time,
+            ramp_time=ramp_time,
+            waypoint_tol=waypoint_tol,
+            waypoint_kp=waypoint_kp,
+            yaw_mode=yaw_mode,
+            follower_max_wz=follower_max_wz,
+        )
+
+    save_comparison_plot(results, robot_name, disturbance_type, path_name)
+    return results
+
 
 # =====================================================================
 # Entry point

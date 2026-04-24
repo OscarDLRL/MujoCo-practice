@@ -24,6 +24,7 @@ import select
 import numpy as np
 from dataclasses import dataclass
 
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from gym_quadruped.quadruped_env import QuadrupedEnv
@@ -33,6 +34,11 @@ from src.estimator_ekf import OrientationEKF
 from src.controller_pmp import PontryaginController
 from src.controller_lqg import LQGController
 from src.controller_mpc import MPCController
+from src.trajectory_generator import WaypointTrajectory
+from quadruped_pympc.quadruped_pympc_wrapper import QuadrupedPyMPC_Wrapper
+from gym_quadruped.utils.quadruped_utils import LegsAttr
+
+
 
 
 # =====================================================================
@@ -469,6 +475,18 @@ def run(
     print("  Starting simulation...\n")
 
     try:
+        pympc = QuadrupedPyMPC_Wrapper(
+            initial_feet_pos=env.feet_pos,
+            legs_order=("FL","FR","RL","RR"),
+        )
+
+        traj = WaypointTrajectory(
+            [[0.0,0.0,0.30],
+            [2.0,0.0,0.30]],
+            speed=0.2,
+            dt=sim_dt
+        )
+
         for step in range(n_steps):
             t = step * sim_dt
 
@@ -476,9 +494,11 @@ def run(
             contact = get_contacts(env)
             r_feet = get_feet_world(env)
 
-            cmd_vx = teleop.vx if teleop_enabled else 0.0
-            cmd_vy = teleop.vy if teleop_enabled else 0.0
-            cmd_wz = teleop.wz if teleop_enabled else 0.0
+            ref = traj.get_reference(step)
+
+            cmd_vx = ref["vel"][0]
+            cmd_vy = ref["vel"][1]
+            cmd_wz = ref["yaw_rate"]
 
             x_ref = build_reference_state(
                 dyn,
@@ -546,8 +566,89 @@ def run(
                     if not contact[i]:
                         current_grfs[3 * i:3 * i + 3] = 0.0
 
-            tau = grf_to_torques(env, current_grfs, contact)
-            _, _, terminated, _, _ = env.step(action=tau)
+            # --- states para PyMPC ---
+            feet_pos = env.feet_pos(frame="world")
+            feet_vel = env.feet_vel(frame="world")
+            hip_pos = env.hip_positions(frame="world")
+
+            base_lin_vel = env.base_lin_vel(frame="world")
+            base_ang_vel = env.base_ang_vel(frame="base")
+            base_ori_euler_xyz = env.base_ori_euler_xyz
+
+            base_pos = env.base_pos.copy()
+            com_pos  = env.com.copy()
+
+            qpos = env.mjData.qpos
+            qvel = env.mjData.qvel
+
+            legs_qvel_idx = env.legs_qvel_idx
+            legs_qpos_idx = env.legs_qpos_idx
+
+            # ojo esto así lo hace PyMPC
+            joints_pos = LegsAttr(
+                FL=qpos[legs_qpos_idx.FL],
+                FR=qpos[legs_qpos_idx.FR],
+                RL=qpos[legs_qpos_idx.RL],
+                RR=qpos[legs_qpos_idx.RR],
+            )
+
+            legs_mass_matrix = env.legs_mass_matrix
+            legs_qfrc_bias = env.legs_qfrc_bias
+            legs_qfrc_passive = env.legs_qfrc_passive
+
+            feet_jac = env.feet_jacobians(frame="world", return_rot_jac=False)
+            feet_jac_dot = env.feet_jacobians_dot(frame="world", return_rot_jac=False)
+
+            inertia = env.get_base_inertia().flatten()
+
+            ref_base_lin_vel = np.array([cmd_vx, cmd_vy, 0.0])
+            ref_base_ang_vel = np.array([0.0,0.0,cmd_wz])
+
+            tau_init = LegsAttr(
+                FL=np.zeros(3),
+                FR=np.zeros(3),
+                RL=np.zeros(3),
+                RR=np.zeros(3),
+            )
+
+            tau_leg = pympc.compute_actions(
+                com_pos,
+                base_pos,
+                base_lin_vel,
+                base_ori_euler_xyz,
+                base_ang_vel,
+                feet_pos,
+                hip_pos,
+                joints_pos,
+                None,                        # heightmaps
+                ("FL","FR","RL","RR"),
+                sim_dt,
+                ref_base_lin_vel,
+                ref_base_ang_vel,
+                env.step_num,
+                qpos,
+                qvel,
+                feet_jac,
+                feet_jac_dot,
+                feet_vel,
+                legs_qfrc_passive,
+                legs_qfrc_bias,
+                legs_mass_matrix,
+                legs_qpos_idx,
+                legs_qvel_idx,
+                tau_init,                        # tau init
+                inertia,
+                env.mjData.contact,
+            )
+
+            action = np.zeros(env.mjModel.nu)
+
+            action[env.legs_tau_idx.FL] = tau_leg.FL
+            action[env.legs_tau_idx.FR] = tau_leg.FR
+            action[env.legs_tau_idx.RL] = tau_leg.RL
+            action[env.legs_tau_idx.RR] = tau_leg.RR
+
+            _,_,terminated,_,_ = env.step(action=action)
 
             if render:
                 env.render()
@@ -571,9 +672,7 @@ def run(
 
             if terminated:
                 print(f"  Terminated at t={t:.2f}s")
-                _ = env.reset(random=False)
-                if render:
-                    env.render()
+                break
 
     except KeyboardInterrupt:
         print("\n  Interrupted by user.")

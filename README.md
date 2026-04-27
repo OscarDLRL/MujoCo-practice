@@ -196,10 +196,52 @@ Si MujoCo esta dando problemas es mejor evitar el render y que simule todo.
 --no-render
 ```
 ## Resultados
-Las graficas que se generan al correr el codigo se guardan en el folder de results, se pueden hacer pruebas individuales o poner el comando de **--controller all** para tener una comparativa de la efectividad de los 3 controladores, para la discución de resultados y determinar efectividad se tomara en cuenta si logro terminar la ruta preestablecida, su error de raiz cuadratico (RMSE), Final waypoint error (FinalWP), Mean velocity error y Mean GRF norm. 
+Las graficas que se generan al correr el codigo se guardan en el folder de results, se pueden hacer pruebas individuales o poner el comando de **--controller all** para tener una comparativa de la efectividad de los 3 controladores, para la discución de resultados y determinar efectividad se tomara en cuenta lo que se menciono anteriormente en la sección de **Metricas evaluadas**
 
 Además de la graficas, al correr nuestro run_mujoco.py genera un summary final de los datos mencionados anteriormente.
 
 ### Primera Prueba: Rutas sin perturbaciones
+**Linea recta sin perturbaciones**
 ![Line no disturbance](images/mujoco_comparison_aliengo_line_none.png)
 
+Como es esperado, en un entorno controlado y una ruta simple no es problema para los 3 controladores y los 3 muestran ser capaces de por lo menos terminar la ruta preestablecida. Sin embargo, las gráficas nos demuestran que el controlador LQG fue el que tuvo menos errores durante su trayecto. A continuación esta el output con los datos numericos.
+
+```bash
+  --- PMP Summary ---
+  Tracking RMSE xy:     0.0939 m
+  Tracking RMSE xyz:    0.1003 m
+  Mean velocity error:  0.1181 m/s
+  Final waypoint error: 0.0475 m
+  Path completion:      100.0 %
+  Survival time:        14.00 s
+  Mean GRF norm:        135.3 N
+  Termination:          completed
+
+  --- LQG Summary ---
+  Tracking RMSE xy:     0.0615 m
+  Tracking RMSE xyz:    0.0741 m
+  Mean velocity error:  0.0814 m/s
+  Final waypoint error: 0.0172 m
+  Path completion:      100.0 %
+  Survival time:        14.00 s
+  Mean GRF norm:        53.7 N
+  Termination:          completed
+
+--- MPC Summary ---
+  Tracking RMSE xy:     0.0819 m
+  Tracking RMSE xyz:    0.0904 m
+  Mean velocity error:  0.0790 m/s
+  Final waypoint error: 0.0637 m
+  Path completion:      100.0 %
+  Survival time:        14.00 s
+  Mean GRF norm:        29.1 N
+  Termination:          completed
+```
+En conclusión, aunque los tres controladores completaron la ruta, LQG mostró el mejor desempeño global al combinar el menor RMSE y menor error final al waypoint. Aunque no usa tan poca fuerza como MPC, se puede decir que es el más balanceado entre precisión, estabilidad y esfuerzo de control, a diferencia de PMP que usa más fuerza y presenta mayores errores. Por ello resulta el controlador más efectivo bajo condiciones sin perturbaciones.
+
+**Cuadrado sin perturbaciones**
+![Square no disturbance](images/mujoco_comparison_aliengo_square_none.png)
+
+### Segunda Prueba: Rutas con perturbaciones de impulso
+
+### Tercera Prueba: Rutas con perturbaciones persistentes

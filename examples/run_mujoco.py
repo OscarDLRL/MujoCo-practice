@@ -664,6 +664,18 @@ def run(
     sim_dt = env.mjModel.opt.timestep
     ctrl_dt = 0.01
     ctrl_steps = max(1, int(ctrl_dt / sim_dt))
+    if duration is None:
+        # usar longitud del path / velocidad deseada
+        path_length = compute_path_length(waypoints_world_np)
+
+        # tiempo nominal para recorrer trayectoria
+        duration = path_length / path_speed
+
+        # margen para aceleración, settling, maniobras
+        duration *= 1.4
+
+        print(f"Auto duration selected: {duration:.2f} s")
+
     n_steps = int(duration / sim_dt)
 
     log_t = []
@@ -1048,7 +1060,11 @@ if __name__ == "__main__":
         action="store_true",
         help="Enable keyboard teleoperation for commanded velocities",
     )
-    parser.add_argument("--duration", type=float, default=10.0)
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None
+    )
     parser.add_argument("--path", default="line", choices=["line", "square", "zigzag"])
     parser.add_argument("--path-speed", type=float, default=0.15)
     parser.add_argument(

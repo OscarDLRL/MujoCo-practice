@@ -1,327 +1,205 @@
 # Quadruped Optimal Control: PMP, LQG & MPC
 
-Optimal control framework for quadruped robot stabilization and commanded-velocity tracking in MuJoCo, built on top of `gym-quadruped`. The project compares three control strategies under external disturbances:
+## Integrantes
+Emiliano Niño García | A00228130  
+Oscar de la Rosa López | A00838666  
+Rigoberto Said Soto Quiroga | A01571662  
+Arturo Balboa Alvarado | A01712275  
+Angel Hernández Rojas | A00836889
 
-- Pontryagin Maximum Principle (PMP)
-- Linear Quadratic Gaussian control (LQG)
-- Model Predictive Control (MPC)
+# Metodología
 
-The main executable is `examples/run_mujoco.py`, which supports rendering, controller comparison, configurable robot models, disturbance injection, and keyboard teleoperation.
+## Base de simulación
+Este proyecto se desarrolló utilizando el repositorio **Quadruped-PyMPC** como framework base de simulación y control para robots cuadrúpedos en MuJoCo.
 
-## Mathematical Foundation
+Se utilizó específicamente el robot:
 
-### Dynamics
+- **AlienGo** (`--robot-name aliengo`)
 
-The floating-base state is defined as:
+sobre el entorno:
 
-```text
-x = [p, v, θ, ω]
-````
+- Flat terrain en MuJoCo
+- Simulación dinámica con `sim_dt = 0.002 s`
+- Frecuencia de control ≈ 100 Hz
 
-where:
+---
 
-* `p ∈ R³`: base position
-* `v ∈ R³`: base linear velocity
-* `θ ∈ R³`: base orientation in Euler coordinates
-* `ω ∈ R³`: base angular velocity
+## Integración de controladores
+Se integraron tres controladores proporcionados originalmente en el curso:
 
-The discrete-time dynamics are modeled as:
+- **PMP** (Pontryagin Minimum Principle)
+- **LQG** (Linear Quadratic Gaussian)
+- **MPC** (Model Predictive Control)
 
-```text
-x_{k+1} = A_k x_k + B_k u_k + g_k + w_k
+Estos controladores fueron conectados a la librería `Quadruped-PyMPC`, utilizando la dinámica del robot y el wrapper:
+
+```python
+QuadrupedPyMPC_Wrapper(...)
 ```
 
-where `A_k` and `B_k` are obtained from the linearized single rigid body dynamics, `g_k` captures gravity and affine terms, and `u` contains the 12-dimensional ground reaction force vector:
+permitiendo traducir las fuerzas calculadas por los controladores en torques articulares aplicados al robot AlienGo.
 
-```text
-u = [f_FL, f_FR, f_RL, f_RR]
-```
+---
 
-Each leg contributes a 3D contact force.
+## Cambios realizados sobre el ejemplo original del profesor
 
-### 1. Pontryagin Maximum Principle (PMP)
+### 1. De regulación a tracking por waypoints
+El ejemplo original estaba enfocado en estabilización.
 
-The PMP controller is derived from the Hamiltonian:
+Nosotros añadimos:
 
-```text
-H(x, u, λ, t) = L(x, u, t) + <λ, f(x, u, t)>
-```
-
-The costate evolves according to:
-
-```text
-λ̇ = -∂H/∂x = -Qx - Aᵀλ
-```
-
-and the optimal control satisfies:
-
-```text
-u* = argmin_u H = -R⁻¹Bᵀλ
-```
-
-In implementation, this is solved through a backward Riccati sweep over a finite horizon.
-
-### 2. LQG (LQR + Kalman Filter)
-
-The LQG controller combines:
-
-#### LQR state feedback
-
-```text
-P = Q + Aᵀ P A - Aᵀ P B (R + Bᵀ P B)⁻¹ Bᵀ P A
-K = (R + Bᵀ P B)⁻¹ Bᵀ P A
-```
-
-#### Kalman state estimation
-
-```text
-Predict:  x̂⁻ = A x̂ + B u + g
-          P⁻ = A P Aᵀ + Q_proc
-
-Update:   K_kf = P⁻ Cᵀ (C P⁻ Cᵀ + R_meas)⁻¹
-          x̂ = x̂⁻ + K_kf (y - C x̂⁻)
-```
-
-This allows state-feedback control under measurement noise and model uncertainty.
-
-### 3. Model Predictive Control (MPC)
-
-The MPC controller solves a receding-horizon quadratic program:
-
-```text
-min  Σ (x_k - x_ref)ᵀ Q (x_k - x_ref) + (u_k - u_ref)ᵀ R (u_k - u_ref)
-s.t. x_{k+1} = A x_k + B u_k + g
-     |f_x| ≤ μ f_z
-     |f_y| ≤ μ f_z
-     0 ≤ f_z ≤ f_max
-```
-
-The optimization includes:
-
-* linearized dynamics
-* friction pyramid constraints
-* normal force bounds
-
-The implementation uses OSQP.
-
-### Orientation Estimation
-
-An EKF is used to estimate orientation from IMU signals. The process follows the standard structure:
-
-```text
-Predict:  q⁺ = (I + ½ Ω(ω) Δt) q
-Update:   y_a ≈ R_WBᵀ g
-```
-
-This estimated orientation is used inside the linearization and control pipeline.
-
-## Important Scope Note
-
-This repository currently implements **body-level optimal control** using ground reaction force regulation and torque mapping through the leg Jacobians. It is well suited for:
-
-* posture stabilization
-* disturbance rejection
-* commanded velocity tracking at the base level
-* controller comparison in simulation
-
-However, this alone is **not a complete locomotion stack**. True walking typically also requires:
-
-* gait scheduling
-* swing-leg trajectory generation
-* foothold planning
-* contact sequence management
-
-The teleoperation mode in `run_mujoco.py` provides commanded base velocities, but successful walking behavior still depends on the capabilities exposed by the underlying environment and contact dynamics.
-
-## Project Structure
-
-```text
-quadruped-optimal-control/
-├── src/
-│   ├── dynamics.py          # Linearized SRB dynamics
-│   ├── estimator_ekf.py     # Orientation EKF + state estimation utilities
-│   ├── controller_pmp.py    # Pontryagin-based controller
-│   ├── controller_lqg.py    # LQG controller
-│   ├── controller_mpc.py    # MPC controller with force constraints
-├── examples/
-│   └── run_mujoco.py        # Main MuJoCo runner with rendering and teleop
-├── tests/
-│   └── test_all.py
-├── results/                 # Generated plots
-└── requirements.txt
-```
-
-## Features of `run_mujoco.py`
-
-The main script supports:
-
-* single-controller execution
-* controller comparison mode
-* configurable robot model via `--robot-name`
-* MuJoCo rendering or headless mode
-* external disturbances
-* keyboard teleoperation
-* automatic plot generation
-
-Supported controllers:
-
-* `pmp`
-* `lqg`
-* `mpc`
-* `all`
-
-Supported disturbance modes:
-
-* `impulse`
-* `persistent`
-* `none`
-
-## Quick Start
-
-### 1. Install dependencies
+- generación de trayectorias por waypoints:
+  - line
+  - square
+  - zigzag
 
 ```bash
-pip install -r requirements.txt
+--path line
+--path square
+--path zigzag
 ```
 
-### 2. Install `gym-quadruped`
+usando:
 
-```bash
-cd gym-quadruped-master
-pip install -e .
+```python
+WaypointTrajectory(...)
+waypoint_follower(...)
 ```
 
-### 3. Run a controller
+para que el robot no solo se estabilizara sino siguiera trayectorias.
 
-```bash
-python examples/run_mujoco.py --controller lqg --robot-name mini_cheetah
+---
+
+### 2. Integración con locomoción real del PyMPC
+En lugar de mover únicamente el centro de masa, se acopló el alto nivel (PMP/LQG/MPC) con el generador de marcha de Quadruped-PyMPC:
+
+- gait trot
+- footstep planning
+- swing trajectories
+- ground reaction forces
+- torque computation
+
+Esto permitió locomoción real del cuadrúpedo.
+
+---
+
+### 3. Modificación de parámetros del gait
+Se ajustaron parámetros del robot:
+
+- `step_freq`
+- `duty_factor`
+- `step_height`
+- impedance gains
+- swing feedback gains
+
+para mejorar estabilidad antes de aumentar velocidad.
+
+---
+
+### 4. Corrección por fuerzas de reacción (GRF feedback)
+Se agregó retroalimentación usando:
+
+```python
+controller_velocity_correction(...)
 ```
 
-### 4. Run with rendering disabled
+para corregir:
+
+- velocidad longitudinal
+- velocidad lateral
+- yaw rate
+
+a partir de las fuerzas de reacción calculadas.
+
+---
+
+### 5. Comparación automática entre controladores
+Se añadió modo comparación:
 
 ```bash
-python examples/run_mujoco.py --controller mpc --robot-name mini_cheetah --no-render
+--controller all
 ```
 
-### 5. Run all controllers for comparison
+que ejecuta:
+
+- PMP
+- LQG
+- MPC
+
+y genera:
+
+- plots comparativos
+- métricas automáticas
+- CSV de resultados
 
 ```bash
-python examples/run_mujoco.py --controller all --robot-name mini_cheetah --duration 8
+results/metrics_runs.csv
+results/comparison_*.csv
 ```
 
-### 6. Run with teleoperation
+---
+
+## Métricas evaluadas
+Se evaluó desempeño con:
+
+- Tracking RMSE
+- Error al waypoint final
+- Porcentaje de trayectoria completada
+- Survival time
+- Error de velocidad
+- Distancia recorrida
+- Norma de fuerzas GRF
+
+Esto permitió comparar cuantitativamente los tres controladores.
+
+---
+
+## Perturbaciones
+También se probaron perturbaciones externas:
 
 ```bash
-python examples/run_mujoco.py --controller lqg --robot-name mini_cheetah --teleop
+--disturbance impulse
+--disturbance persistent
 ```
 
-## Teleoperation
+para analizar robustez ante empujes y disturbios sostenidos.
 
-When `--teleop` is enabled, keyboard commands modify the commanded planar base velocity and yaw rate online.
+---
 
-Keys:
+## Comandos de ejecución
 
-- `↑` / `↓`: increase or decrease forward velocity
-- `←` / `→`: increase or decrease yaw rate
-- `z` / `c`: increase or decrease lateral velocity
-- `space`: reset commanded velocities to zero
-
-Example:
+Ejemplo LQG:
 
 ```bash
-python examples/run_mujoco.py --controller lqg --robot-name go2 --teleop
-
-## Command-Line Arguments
-
 python examples/run_mujoco.py \
-    --controller lqg \
-    --robot-name mini_cheetah \
-    --duration 8 \
-    --disturbance impulse \
-    --teleop
+--controller lqg \
+--robot-name aliengo \
+--path line \
+--duration 10
 ```
 
-Arguments:
-
-* `--controller {pmp,lqg,mpc,all}`
-* `--robot-name <name>`
-* `--duration <seconds>`
-* `--disturbance {impulse,persistent,none}`
-* `--teleop`
-* `--no-render`
-
-## Output
-
-For single-controller runs, the script saves a plot in `results/` including:
-
-* base position
-* base velocity
-* base orientation
-* control effort
-* disturbance profile
-
-For comparison mode, the script saves an overlay plot comparing:
-
-* position error
-* velocity error
-* control norm
-
-Example output files:
-
-```text
-results/mujoco_lqg_mini_cheetah_impulse.png
-results/mujoco_mpc_go2_persistent.png
-results/mujoco_comparison_mini_cheetah_impulse.png
-```
-
-## Example Workflows
-
-### Stabilization under impulse disturbance
+Comparación completa + disturbance:
 
 ```bash
-python examples/run_mujoco.py --controller pmp --robot-name mini_cheetah --disturbance impulse
+python examples/run_mujoco.py \
+--controller all \
+--robot-name aliengo \
+--path square \
+--disturbance impulse
 ```
+Extras
 
-### Persistent disturbance rejection
+si no se especifica duración la simulación durara hasta que el robot termine todo el recorrido. 
+Si MujoCo esta dando problemas es mejor evitar el render y que simule todo.
 
 ```bash
-python examples/run_mujoco.py --controller mpc --robot-name go2 --disturbance persistent
+--no-render
 ```
+## Resultados
+Las graficas que se generan al correr el codigo se guardan en el folder de results, se pueden hacer pruebas individuales o poner el comando de **--controller all** para tener una comparativa de la efectividad de los 3 controladores, para la discución de resultados y determinar efectividad se tomara en cuenta si logro terminar la ruta preestablecida, su error de raiz cuadratico (RMSE), Final waypoint error (FinalWP), Mean velocity error y Mean GRF norm. 
 
-### Controller comparison
+Además de la graficas, al correr nuestro run_mujoco.py genera un summary final de los datos mencionados anteriormente.
 
-```bash
-python examples/run_mujoco.py --controller all --robot-name mini_cheetah --duration 10 --no-render
-```
+### Primera Prueba: Rutas sin perturbaciones
+![Line no disturbance](images/mujoco_comparison_aliengo_line_none.png)
 
-### Interactive commanded-velocity test
-
-```bash
-python examples/run_mujoco.py --controller lqg --robot-name aliengo --teleop
-```
-
-## Interpretation of Results
-
-The metrics reported at the end of each run summarize controller behavior in terms of:
-
-* state tracking error
-* maximum observed deviation
-* mean control effort
-
-These are useful for comparing disturbance rejection and tracking performance, especially in the stabilization regime.
-
-Because the system currently focuses on body-level control rather than full gait synthesis, results should be interpreted primarily as:
-
-* base stabilization quality
-* robustness to disturbances
-* responsiveness to commanded velocity references
-
-rather than as a full benchmark of autonomous quadruped locomotion.
-
-## References
-
-1. Kang, Wang, Xiong. *Fast Decentralized State Estimation for Legged Robot Locomotion via EKF and MHE*. arXiv:2405.20567.
-2. Murrieta-Cid. *Hamilton-Jacobi-Bellman Equation and Pontryagin Maximum Principle*.
-3. Di Carlo et al. *Dynamic Locomotion in the MIT Cheetah 3 through Convex Model-Predictive Control*. IROS 2018.
-
-```

@@ -464,7 +464,7 @@ def append_metrics_csv(metrics_path: str, row: dict):
 
 
 
-def save_single_run_plot(result, metrics, controller_name, robot_name, disturbance_type, path_name, waypoints_world):
+def save_single_run_plot(result, metrics, controller_name, robot_name, disturbance_type, path_name, waypoints_world, path_speed):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -479,7 +479,8 @@ def save_single_run_plot(result, metrics, controller_name, robot_name, disturban
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle(
-        f"{controller_name.upper()} | {robot_name} | path={path_name} | disturbance={disturbance_type}",
+        f"Controller comparison | {robot_name} | path={path_name} | "
+        f"path_speed={path_speed:.2f} m/s | disturbance={disturbance_type}",
         fontsize=13,
         fontweight="bold",
     )
@@ -543,7 +544,7 @@ def save_single_run_plot(result, metrics, controller_name, robot_name, disturban
 
 
 
-def save_comparison_plot(results, comparison_rows, robot_name, disturbance_type, path_name, waypoints_world):
+def save_comparison_plot(results, comparison_rows, robot_name, disturbance_type, path_name, waypoints_world, path_speed):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -554,11 +555,11 @@ def save_comparison_plot(results, comparison_rows, robot_name, disturbance_type,
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle(
-        f"Controller comparison | {robot_name} | path={path_name} | disturbance={disturbance_type}",
+        f"Controller comparison | {robot_name} | path={path_name} | "
+        f"path_speed={path_speed:.2f} m/s | disturbance={disturbance_type}",
         fontsize=13,
         fontweight="bold",
     )
-
     # XY trajectories
     axes[0, 0].scatter(waypoints_world[:, 0], waypoints_world[:, 1], s=40, label="waypoints")
     for name, data in results.items():
@@ -972,6 +973,7 @@ def run(
             disturbance_type,
             path_name,
             waypoints_world_np,
+            path_speed
         )
 
     print(f"\n  --- {controller_name.upper()} Summary ---")
@@ -1024,7 +1026,7 @@ def run_comparison(
         })
 
     if waypoints_world is not None:
-        save_comparison_plot(results, comparison_rows, robot_name, disturbance_type, path_name, waypoints_world)
+        save_comparison_plot(results, comparison_rows, robot_name, disturbance_type, path_name, waypoints_world, path_speed)
 
     cmp_csv = f"results/comparison_{robot_name}_{path_name}_{disturbance_type}.csv"
     with open(cmp_csv, "w", newline="") as f:

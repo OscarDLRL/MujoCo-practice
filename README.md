@@ -239,10 +239,14 @@ Como es esperado, en un entorno controlado y una ruta simple no es problema para
   Mean GRF norm:        29.1 N
   Termination:          completed
 ```
-En conclusión, aunque los tres controladores completaron la ruta, LQG mostró el mejor desempeño global al combinar el menor RMSE y menor error final al waypoint. Aunque no usa tan poca fuerza como MPC, se puede decir que es el más balanceado entre precisión, estabilidad y esfuerzo de control, a diferencia de PMP que usa más fuerza y presenta mayores errores. Por ello resulta el controlador más efectivo bajo condiciones sin perturbaciones.
 
-**Cuadrado sin perturbaciones**
-![Square no disturbance](images/mujoco_comparison_aliengo_square_none.png)
+**Cuadrado sin perturbaciones 1**
+![Square no disturbance](images/mujoco_comparison_aliengo_square_none_15.png)
+
+**Cuadrado sin perturbaciones 2**
+![Square no disturbance](images/mujoco_comparison_aliengo_square_none_10.png)
+
+La velocidad del recorrido afecta fuertemente en el control y despempeño del robot, se puede ver claramente como en comparacion de Cuadrado 1,2 y 3 es que una baja velocidad genera mejores resultados y podra seguir los waypoints de mejor manera ya que no sentira la necesidad de cortar camino con tal de mantener ese path speed.
 
 ### Segunda Prueba: Ruta de linea con perturbaciones
 **Linea con perturbacion de impulso**
@@ -250,7 +254,7 @@ En conclusión, aunque los tres controladores completaron la ruta, LQG mostró e
 **Linea con perturbacion persistente**
 ![Line + persistent](images/mujoco_comparison_aliengo_line_persistent.png)
 
-### Tercera Prueba: Rutas Cuadrado perturbaciones persistentes
+### Tercera Prueba: Ruta Cuadrado con perturbaciones
 
 
 ## Conclusiones

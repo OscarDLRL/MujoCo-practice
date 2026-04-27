@@ -420,7 +420,13 @@ def compute_metrics(result: dict, traj: WaypointTrajectory, waypoints_world: np.
     final_waypoint_error = float(np.linalg.norm(state[-1, :2] - waypoints_world[-1, :2]))
 
     traj_samples = traj.samples
-    last_nearest = nearest_waypoint_index(state[-1, :2], traj_samples)
+    nearest_indices = [
+        nearest_waypoint_index(pos[:2], traj_samples)
+        for pos in state
+    ]
+
+    last_nearest = max(nearest_indices)
+
     completion_pct = 100.0 * last_nearest / max(1, len(traj_samples) - 1)
 
     distance_travelled = 0.0

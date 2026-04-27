@@ -186,10 +186,12 @@ python examples/run_mujoco.py \
 --robot-name aliengo \
 --path square \
 --disturbance impulse
+--path-speed 0.08
 ```
 Extras
 
-si no se especifica duración la simulación durara hasta que el robot termine todo el recorrido. 
+Si no se especifica duración la simulación durara hasta que el robot termine todo el recorrido.
+Si no se especifica la velocidad en el que recorre el path se usa 0.15 m/s por preterminado.
 Si MujoCo esta dando problemas es mejor evitar el render y que simule todo.
 
 ```bash
@@ -242,6 +244,13 @@ En conclusión, aunque los tres controladores completaron la ruta, LQG mostró e
 **Cuadrado sin perturbaciones**
 ![Square no disturbance](images/mujoco_comparison_aliengo_square_none.png)
 
-### Segunda Prueba: Rutas con perturbaciones de impulso
+### Segunda Prueba: Ruta de linea con perturbaciones
+**Linea con perturbacion de impulso**
+![Line + impulse](images/mujoco_comparison_aliengo_line_impulse.png)
+**Linea con perturbacion persistente**
+![Line + persistent](images/mujoco_comparison_aliengo_line_persistent.png)
 
-### Tercera Prueba: Rutas con perturbaciones persistentes
+### Tercera Prueba: Rutas Cuadrado perturbaciones persistentes
+
+
+## Conclusiones

@@ -257,7 +257,7 @@ La velocidad del recorrido afecta fuertemente en el control y despempeño del ro
 **Linea con perturbacion persistente**
 ![Line + persistent](images/mujoco_comparison_aliengo_line_persistent.png)
 
-En el impulso el que tiene menos RMSE es PMP y con segundo lugar MPC. Sin embargo, con perturbaciones constantes el controlador con el RMSE más pequeño es LQG.
+En el impulso el que tiene menos RMSE es **PMP** y con segundo lugar **MPC**. Sin embargo, con perturbaciones constantes el controlador con el RMSE más pequeño es **LQG**.
 
 ### Tercera Prueba: Ruta Cuadrado con perturbaciones
 **Cuadrado con perturbacion de impulso**

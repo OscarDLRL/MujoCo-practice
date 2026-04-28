@@ -246,6 +246,9 @@ Como es esperado, en un entorno controlado y una ruta simple no es problema para
 **Cuadrado sin perturbaciones 2**
 ![Square no disturbance](images/mujoco_comparison_aliengo_square_none_10.png)
 
+**Cuadrado sin perturbaciones 3**
+![Square no disturbance](images/mujoco_comparison_aliengo_square_none_7.png)
+
 La velocidad del recorrido afecta fuertemente en el control y despempeño del robot, se puede ver claramente como en comparacion de Cuadrado 1,2 y 3 es que una baja velocidad genera mejores resultados y podra seguir los waypoints de mejor manera ya que no sentira la necesidad de cortar camino con tal de mantener ese path speed.
 
 ### Segunda Prueba: Ruta de linea con perturbaciones
@@ -254,7 +257,22 @@ La velocidad del recorrido afecta fuertemente en el control y despempeño del ro
 **Linea con perturbacion persistente**
 ![Line + persistent](images/mujoco_comparison_aliengo_line_persistent.png)
 
-### Tercera Prueba: Ruta Cuadrado con perturbaciones
+En el impulso el que tiene menos RMSE es PMP y con segundo lugar MPC. Sin embargo, con perturbaciones constantes el controlador con el RMSE más pequeño es LQG.
 
+### Tercera Prueba: Ruta Cuadrado con perturbaciones
+**Cuadrado con perturbacion de impulso**
+![Line + persistent](images/mujoco_comparison_aliengo_square_impulse.png)
+**Cuadrado con perturbacion persistente**
+![Line + persistent](images/mujoco_comparison_aliengo_square_persistent.png)
+
+Al ser una trayectoria más difícil, con giros de 90° y una velocidad relativamente alta, el desempeño de los tres controladores se ve afectado significativamente, por lo que reducir la velocidad resulta necesario para que puedan recorrer el cuadrado de forma adecuada. En ambos casos, el controlador **LQG** presenta el menor RMSE. Sin embargo, se observa algo importante y es que bajo perturbaciones de impulso, **MPC** no logra completar el cuadrado, mientras que en perturbaciones persistentes ocurre algo aún más interesante y es que aunque **LQG** mantiene el menor RMSE, no completa correctamente la trayectoria. mientras **MPC** si lo logra. Esto demuestra que en este escenario el RMSE por sí solo no es suficiente para evaluar desempeño, ya que **MPC**, aunque con mayor error, es el único que conserva la forma del cuadrado y completa la geometría de la trayectoria.
 
 ## Conclusiones
+
+A partir de los resultados obtenidos puede concluirse que **LQG fue el controlador con mejor desempeño global**, especialmente en condiciones nominales y en escenarios donde la robustez general fue un factor importante. Su capacidad para minimizar el error de seguimiento, mantener estabilidad y rechazar perturbaciones persistentes lo posicionó como la mejor opción cuando el objetivo principal es precisión y comportamiento consistente.
+
+Por otro lado, en escenarios con **perturbaciones impulsivas**, el controlador **PMP** mostró ventajas importantes debido a su respuesta más agresiva y rápida frente a desviaciones repentinas. Aunque en algunos casos requiere un mayor esfuerzo de control, demostró ser una alternativa efectiva cuando la prioridad es reaccionar rápidamente ante disturbios abruptos.
+
+Finalmente, para **trayectorias complejas con restricciones geométricas**, como el recorrido cuadrado, **MPC** mostró fortalezas relevantes al preservar mejor la forma de la trayectoria mientras sufria de pertirbaciones persistentes, incluso en casos donde otras métricas como el RMSE no reflejaban completamente su desempeño. 
+
+En conjunto, los resultados muestran que no existe un único controlador óptimo para todos los escenarios; la elección depende del objetivo del problema de control. Si se busca precisión y robustez general, LQG resulta la mejor opción; si se requiere capacidad de recuperación rápida ante perturbaciones impulsivas, PMP ofrece ventajas; y si el problema involucra trayectorias complejas o restricciones, MPC puede ser la alternativa más adecuada.

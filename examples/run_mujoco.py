@@ -420,14 +420,29 @@ def compute_metrics(result: dict, traj: WaypointTrajectory, waypoints_world: np.
     final_waypoint_error = float(np.linalg.norm(state[-1, :2] - waypoints_world[-1, :2]))
 
     traj_samples = traj.samples
-    nearest_indices = [
-        nearest_waypoint_index(pos[:2], traj_samples)
-        for pos in state
-    ]
+    pts = np.array([s["pos"][:2] for s in traj_samples])
 
-    last_nearest = max(nearest_indices)
+    progress_idx = 0
+    tol_track = 0.18  # tolerancia máxima para considerar que sí va siguiendo el path
 
-    completion_pct = 100.0 * last_nearest / max(1, len(traj_samples) - 1)
+    for pos in state[:, :2]:
+        # solo busca hacia adelante, no en todo el path
+        search_end = min(progress_idx + 80, len(pts))
+        local_pts = pts[progress_idx:search_end]
+
+        if len(local_pts) == 0:
+            break
+
+        d = np.linalg.norm(local_pts - pos[None, :], axis=1)
+        local_best = int(np.argmin(d))
+        best_dist = float(d[local_best])
+
+        # solo avanza progreso si está cerca del path
+        if best_dist < tol_track:
+            progress_idx += local_best
+
+    completion_pct = 100.0 * progress_idx / max(1, len(pts) - 1)
+    completion_pct = float(np.clip(completion_pct, 0.0, 100.0))
 
     distance_travelled = 0.0
     if len(state) > 1:

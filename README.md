@@ -249,7 +249,7 @@ Como es esperado, en un entorno controlado y una ruta simple no es problema para
 **Cuadrado sin perturbaciones 3**
 ![Square no disturbance](images/mujoco_comparison_aliengo_square_none_7.png)
 
-La velocidad del recorrido afecta fuertemente en el control y despempeño del robot, se puede ver claramente como en comparacion de Cuadrado 1,2 y 3 es que una baja velocidad genera mejores resultados y podra seguir los waypoints de mejor manera ya que no sentira la necesidad de cortar camino con tal de mantener ese path speed.
+La velocidad del recorrido afecta fuertemente en el control y despempeño del robot, se puede ver claramente como en comparacion de Cuadrado 1,2 y 3 es que una baja velocidad genera mejores resultados y podra seguir los waypoints de mejor manera ya que no sentira la necesidad de cortar camino con tal de mantener ese path speed. No obstante, LQG es el que más respeta la ruta y tiene un LMSE menor que los demás.
 
 ### Segunda Prueba: Ruta de linea con perturbaciones
 **Linea con perturbacion de impulso**
@@ -273,6 +273,6 @@ A partir de los resultados obtenidos puede concluirse que **LQG fue el controlad
 
 Por otro lado, en escenarios con **perturbaciones impulsivas**, el controlador **PMP** mostró ventajas importantes debido a su respuesta más agresiva y rápida frente a desviaciones repentinas. Aunque en algunos casos requiere un mayor esfuerzo de control, demostró ser una alternativa efectiva cuando la prioridad es reaccionar rápidamente ante disturbios abruptos.
 
-Finalmente, para **trayectorias complejas con restricciones geométricas**, como el recorrido cuadrado, **MPC** mostró fortalezas relevantes al preservar mejor la forma de la trayectoria mientras sufria de pertirbaciones persistentes, incluso en casos donde otras métricas como el RMSE no reflejaban completamente su desempeño. 
+Finalmente, para **trayectorias complejas con restricciones geométricas**, como el recorrido cuadrado, **MPC** mostró fortalezas relevantes al preservar mejor la forma de la trayectoria mientras sufria de perturbaciones persistentes, incluso en casos donde otras métricas como el RMSE no reflejaban completamente su desempeño. 
 
 En conjunto, los resultados muestran que no existe un único controlador óptimo para todos los escenarios; la elección depende del objetivo del problema de control. Si se busca precisión y robustez general, LQG resulta la mejor opción; si se requiere capacidad de recuperación rápida ante perturbaciones impulsivas, PMP ofrece ventajas; y si el problema involucra trayectorias complejas o restricciones, MPC puede ser la alternativa más adecuada.
